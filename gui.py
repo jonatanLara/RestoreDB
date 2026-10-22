@@ -2,6 +2,7 @@ import os
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+import webbrowser
 from core.database import DatabaseRestorer
 
 class RestorerApp:
@@ -15,7 +16,31 @@ class RestorerApp:
         style = ttk.Style()
         style.theme_use("clam")
 
+        # Construir Barra de Menú
+        self.create_menu()
+
+        # Construir Interfaz Principal
         self.create_widgets()
+
+    def create_menu(self):
+        menubar = tk.Menu(self.root)
+
+        # Menú Archivo
+        file_menu = tk.Menu(menubar, tearoff=0)
+        file_menu.add_command(label="Salir", command=self.root.quit)
+        menubar.add_cascade(label="Archivo", menu=file_menu)
+
+        # Menú Herramientas / Avanzado
+        tools_menu = tk.Menu(menubar, tearoff=0)
+        tools_menu.add_command(label="Ver comando equivalente en Consola (CLI)", command=self.show_cli_helper)
+        menubar.add_cascade(label="Avanzado", menu=tools_menu)
+
+        # Menú Ayuda
+        help_menu = tk.Menu(menubar, tearoff=0)
+        help_menu.add_command(label="Acerca de...", command=self.show_about_dialog)
+        menubar.add_cascade(label="Ayuda", menu=help_menu)
+
+        self.root.config(menu=menubar)
 
     def create_widgets(self):
         # Frame Principal con Padding
@@ -66,7 +91,7 @@ class RestorerApp:
 
         db_frame.columnconfigure(1, weight=1)
 
-        # Base de datos destino (Combobox + Opción de crear nueva)
+        # Base de datos destino
         ttk.Label(db_frame, text="Base de Datos:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
         self.db_combobox = ttk.Combobox(db_frame, values=["tren_maya"])
         self.db_combobox.set("tren_maya")
@@ -148,6 +173,109 @@ class RestorerApp:
             self.file_entry.delete(0, tk.END)
             self.file_entry.insert(0, filename)
 
+    def show_about_dialog(self):
+        # Crear una ventana secundaria flotante
+        about_win = tk.Toplevel(self.root)
+        about_win.title("Acerca de la Herramienta")
+        
+        # --- LÓGICA DE CENTRADO EN PANTALLA (Altura ajustada a 340 para que quepa todo) ---
+        width = 480
+        height = 340
+        screen_width = about_win.winfo_screenwidth()
+        screen_height = about_win.winfo_screenheight()
+        x = (screen_width // 2) - (width // 2)
+        y = (screen_height // 2) - (height // 2)
+        about_win.geometry(f"{width}x{height}+{x}+{y}")
+        
+        about_win.resizable(False, False)
+        about_win.transient(self.root)
+        about_win.grab_set()
+        
+        # Sincronizar el color de fondo de la ventana con el tema visual
+        bg_color = ttk.Style().lookup("TFrame", "background")
+        about_win.configure(bg=bg_color)
+        
+        # --- CONTENEDOR PRINCIPAL TIPO GRID (Garantiza el orden y espacio correcto) ---
+        main_container = ttk.Frame(about_win)
+        main_container.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        # --- 1. Sección del Avatar (Columna 0, Fila 0) ---
+        try:
+            from PIL import Image, ImageTk
+            img_original = Image.open("favicon.png")
+            img_resizada = img_original.resize((50, 50), Image.Resampling.LANCZOS)
+            self.avatar_img = ImageTk.PhotoImage(img_resizada) 
+            
+            lbl_avatar = ttk.Label(main_container, image=self.avatar_img)
+            lbl_avatar.grid(row=0, column=0, sticky="nw", padx=(0, 20), pady=5)
+        except Exception:
+            lbl_avatar = ttk.Label(main_container, text="🚂", font=("Segoe UI", 36))
+            lbl_avatar.grid(row=0, column=0, sticky="nw", padx=(0, 20), pady=0)
+
+        # --- CONTENEDOR DERECHO PARA TEXTOS (Columna 1, Fila 0) ---
+        content_frame = ttk.Frame(main_container)
+        content_frame.grid(row=0, column=1, sticky="nsew")
+        main_container.columnconfigure(1, weight=1)
+
+        # --- 2. Información del Proyecto ---
+        lbl_title = ttk.Label(content_frame, text="Asistente de Restauración de BD", font=("Segoe UI", 12, "bold"))
+        lbl_title.pack(anchor="w", pady=(0, 2))
+        
+        lbl_project = ttk.Label(content_frame, text="Proyecto: Tren Maya", font=("Segoe UI", 10, "italic"), foreground="gray")
+        lbl_project.pack(anchor="w", pady=(0, 10))
+
+        lbl_desc = ttk.Label(
+            content_frame, 
+            text="Herramienta interna diseñada para facilitar la restauración de respaldos espaciales y operativos de PostgreSQL.",
+            wraplength=320, 
+            justify="left",
+            font=("Segoe UI", 9)
+        )
+        lbl_desc.pack(anchor="w", pady=(0, 15))
+        
+        # Estilo común para links para evitar el fondo gris estándar de tk.Label
+        bg_color = ttk.Style().lookup("TFrame", "background")
+                # --- 3. Enlaces (Hipervínculos) ---
+        def open_url(url):
+            webbrowser.open_new_tab(url)
+        # Enlace a Documentación
+        lbl_doc = tk.Label(content_frame, text="📄 Ver Documentación", fg="#0066CC", bg=bg_color, cursor="hand2", font=("Segoe UI", 9, "underline"))
+        lbl_doc.pack(anchor="w", pady=2)
+        lbl_doc.bind("<Button-1>", lambda e: open_url("https://github.com/jonatanLara/RestoreDB/blob/main/documentacion.md"))
+        
+        # Enlace a Repositorio
+        lbl_repo = tk.Label(content_frame, text="💻 Repositorio Git", fg="#0066CC", bg=bg_color, cursor="hand2", font=("Segoe UI", 9, "underline"))
+        lbl_repo.pack(anchor="w", pady=2)
+        lbl_repo.bind("<Button-1>", lambda e: open_url("https://github.com/jonatanLara/RestoreDB"))
+        
+        # --- 4. Pie de página (Versión y Cierre) ---
+        lbl_footer = ttk.Label(content_frame, text="Desarrollado por: Subdirección de Sistemas\nVersión: 1.1.0", font=("Segoe UI", 8), foreground="gray")
+        lbl_footer.pack(anchor="w", pady=(15, 0))
+
+        
+
+    def show_cli_helper(self):
+        host = self.host_entry.get().strip()
+        user = self.user_entry.get().strip()
+        db = self.db_combobox.get().strip()
+        file_path = self.file_entry.get().strip()
+        
+        file_arg = f' --file "{file_path}"' if file_path else ""
+        cmd_example = f"python cli.py --host {host} --user {user} --db {db}{file_arg} --create-db"
+        
+        cli_window = tk.Toplevel(self.root)
+        cli_window.title("Equivalente en Consola (CLI)")
+        cli_window.geometry("600x200")
+        
+        ttk.Label(cli_window, text="Si prefieres ejecutar este proceso directamente desde la terminal,", font=("Arial", 9)).pack(anchor=tk.W, padx=15, pady=(15, 5))
+        ttk.Label(cli_window, text="puedes utilizar el siguiente comando:", font=("Arial", 9)).pack(anchor=tk.W, padx=15, pady=(0, 5))
+        
+        cmd_entry = ttk.Entry(cli_window, font=("Consolas", 9))
+        cmd_entry.insert(0, cmd_example)
+        cmd_entry.pack(fill=tk.X, padx=15, pady=10)
+        
+        ttk.Button(cli_window, text="Cerrar", command=cli_window.destroy).pack(pady=5)
+
     def log_message(self, message):
         self.log_text.insert(tk.END, message)
         self.log_text.see(tk.END)
@@ -164,7 +292,6 @@ class RestorerApp:
         self.btn_restore.config(state=tk.DISABLED)
         self.log_text.delete("1.0", tk.END)
 
-        # Ejecutar en segundo plano para no congelar la interfaz gráfica
         threading.Thread(target=self.run_restore_process, args=(db_name,), daemon=True).start()
 
     def run_restore_process(self, db_name):
