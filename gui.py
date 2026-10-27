@@ -1,3 +1,4 @@
+import json
 import os
 import threading
 import tkinter as tk
@@ -25,6 +26,8 @@ class RestorerApp:
 
         # Construir Interfaz Principal
         self.create_widgets()
+        
+        self.load_config()
         # Cargar esquemas del último backup al iniciar (si existe)
         self.load_items_for_latest_backup()
 
@@ -268,6 +271,7 @@ class RestorerApp:
         success, msg = restorer.test_connection()
         if not success:
             messagebox.showerror("Error de Conexión", f"No se pudo conectar al servidor:\n{msg}")
+            self.save_config()  # <--- Guardar automáticamente al conectar con éxito
             return
         
         dbs = restorer.list_databases()
@@ -482,6 +486,43 @@ class RestorerApp:
             messagebox.showwarning("Aviso", "La restauración finalizó, pero se ignoraron algunos errores menores (Exit Code 1).")
         else:
             messagebox.showerror("Error", "Ocurrió un error crítico durante la restauración. Revise la consola.")
+    
+    def load_config(self):
+        """Carga la configuración previa desde config.json si existe."""
+        config_file = "config.json"
+        if os.path.exists(config_file):
+            try:
+                with open(config_file, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+                    
+                    # Rellenar campos con los valores guardados
+                    if "host" in config:
+                        self.host_entry.delete(0, tk.END)
+                        self.host_entry.insert(0, config["host"])
+                    if "port" in config:
+                        self.port_entry.delete(0, tk.END)
+                        self.port_entry.insert(0, config["port"])
+                    if "user" in config:
+                        self.user_entry.delete(0, tk.END)
+                        self.user_entry.insert(0, config["user"])
+                    if "last_db" in config:
+                        self.db_combobox.set(config["last_db"])
+            except Exception as e:
+                print(f"No se pudo cargar la configuración: {e}")
+
+    def save_config(self):
+        """Guarda la configuración actual en config.json."""
+        config = {
+            "host": self.host_entry.get().strip(),
+            "port": self.port_entry.get().strip(),
+            "user": self.user_entry.get().strip(),
+            "last_db": self.db_combobox.get().strip()
+        }
+        try:
+            with open("config.json", "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=4)
+        except Exception as e:
+            print(f"No se pudo guardar la configuración: {e}")
             
 if __name__ == "__main__":
     root = tk.Tk()
