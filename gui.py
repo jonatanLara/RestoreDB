@@ -8,19 +8,25 @@ from core.database import DatabaseRestorer
 class RestorerApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Restaurador de Base de Datos - Tren Maya")
-        self.root.geometry("750x650")
-        self.root.minsize(700, 600)
+        self.root.title("Restaurador de Base de Datos")
+        self.root.geometry("750x810")
+        self.root.minsize(700, 720)
 
         # Configurar estilo visual moderno
         style = ttk.Style()
         style.theme_use("clam")
+        
+        self.schema_vars = {}  # Almacenará {nombre_esquema: BooleanVar}
+        self.master_schema_var = tk.BooleanVar(value=True)
+        self.mode_var = tk.StringVar(value="schemas")  # "schemas" o "tables"
 
         # Construir Barra de Menú
         self.create_menu()
 
         # Construir Interfaz Principal
         self.create_widgets()
+        # Cargar esquemas del último backup al iniciar (si existe)
+        self.load_items_for_latest_backup()
 
     def create_menu(self):
         menubar = tk.Menu(self.root)
@@ -43,55 +49,45 @@ class RestorerApp:
         self.root.config(menu=menubar)
 
     def create_widgets(self):
-        # Frame Principal con Padding
         main_frame = ttk.Frame(self.root, padding=15)
         main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Título
         title_label = ttk.Label(main_frame, text="Asistente de Restauración PostgreSQL", font=("Arial", 14, "bold"))
         title_label.pack(anchor=tk.W, pady=(0, 10))
 
         # --- SECCIÓN DE CONEXIÓN ---
         conn_frame = ttk.LabelFrame(main_frame, text=" Configuración de Conexión ", padding=10)
         conn_frame.pack(fill=tk.X, pady=5)
-
         conn_frame.columnconfigure(1, weight=1)
         conn_frame.columnconfigure(3, weight=1)
 
-        # Host
         ttk.Label(conn_frame, text="Host:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
         self.host_entry = ttk.Entry(conn_frame)
         self.host_entry.insert(0, "localhost")
         self.host_entry.grid(row=0, column=1, sticky=tk.EW, padx=5, pady=5)
 
-        # Puerto
         ttk.Label(conn_frame, text="Puerto:").grid(row=0, column=2, sticky=tk.W, padx=5, pady=5)
         self.port_entry = ttk.Entry(conn_frame, width=8)
         self.port_entry.insert(0, "5432")
         self.port_entry.grid(row=0, column=3, sticky=tk.EW, padx=5, pady=5)
 
-        # Usuario
         ttk.Label(conn_frame, text="Usuario:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
         self.user_entry = ttk.Entry(conn_frame)
         self.user_entry.insert(0, "postgres")
         self.user_entry.grid(row=1, column=1, sticky=tk.EW, padx=5, pady=5)
 
-        # Contraseña
         ttk.Label(conn_frame, text="Contraseña:").grid(row=1, column=2, sticky=tk.W, padx=5, pady=5)
         self.pass_entry = ttk.Entry(conn_frame, show="*")
         self.pass_entry.grid(row=1, column=3, sticky=tk.EW, padx=5, pady=5)
 
-        # Botón Probar Conexión y Listar BDs
         btn_test = ttk.Button(conn_frame, text="Conectar y Actualizar BDs", command=self.test_and_load_dbs)
         btn_test.grid(row=2, column=0, columnspan=4, sticky=tk.EW, padx=5, pady=5)
 
         # --- SECCIÓN DE BASE DE DATOS Y RESPALDO ---
         db_frame = ttk.LabelFrame(main_frame, text=" Base de Datos y Archivo de Respaldo ", padding=10)
         db_frame.pack(fill=tk.X, pady=10)
-
         db_frame.columnconfigure(1, weight=1)
 
-        # Base de datos destino
         ttk.Label(db_frame, text="Base de Datos:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
         self.db_combobox = ttk.Combobox(db_frame, values=["tren_maya"])
         self.db_combobox.set("tren_maya")
@@ -100,7 +96,6 @@ class RestorerApp:
         btn_new_db = ttk.Button(db_frame, text="Crear Nueva BD", command=self.prompt_create_database)
         btn_new_db.grid(row=0, column=2, padx=5, pady=5)
 
-        # Archivo Backup
         ttk.Label(db_frame, text="Archivo .dump:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
         self.file_entry = ttk.Entry(db_frame)
         self.file_entry.grid(row=1, column=1, sticky=tk.EW, padx=5, pady=5)
@@ -108,9 +103,58 @@ class RestorerApp:
         btn_browse = ttk.Button(db_frame, text="Examinar...", command=self.browse_file)
         btn_browse.grid(row=1, column=2, padx=5, pady=5)
 
-        # Nota al margen
-        note_label = ttk.Label(db_frame, text="* Si deja el campo de archivo vacío, se usará automáticamente el más reciente.", font=("Arial", 8, "italic"), foreground="gray")
+        note_label = ttk.Label(db_frame, text="* Si deja el archivo vacío, se usará el más reciente automáticamente.", font=("Arial", 8, "italic"), foreground="gray")
         note_label.grid(row=2, column=0, columnspan=3, sticky=tk.W, padx=5)
+
+        # --- SECCIÓN DE SELECCIÓN (CON MODO, SCROLL Y ESTADO) ---
+        schemas_frame = ttk.LabelFrame(main_frame, text=" Filtrar y Seleccionar Elementos a Restaurar ", padding=10)
+        schemas_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+
+        # Interruptor de Modo (Radiobuttons: Esquemas vs Tablas)
+        mode_frame = ttk.Frame(schemas_frame)
+        mode_frame.pack(anchor=tk.W, pady=(0, 5))
+        
+        ttk.Label(mode_frame, text="Modo de selección: ").pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Radiobutton(
+            mode_frame, text="Por Esquemas (General)", variable=self.mode_var, 
+            value="schemas", command=self.on_mode_change
+        ).pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(
+            mode_frame, text="Por Tablas (Departamentos)", variable=self.mode_var, 
+            value="tables", command=self.on_mode_change
+        ).pack(side=tk.LEFT, padx=5)
+
+        # Etiqueta de estado
+        self.status_label = ttk.Label(schemas_frame, text="Seleccione un archivo...", font=("Arial", 9, "italic"), foreground="blue")
+        self.status_label.pack(anchor=tk.W, pady=(0, 5))
+
+        # Checkbox Maestro
+        self.master_checkbox = ttk.Checkbutton(
+            schemas_frame, 
+            text="Seleccionar todo / Todo el contenido del modo activo", 
+            variable=self.master_schema_var, 
+            command=self.toggle_all_items
+        )
+        self.master_checkbox.pack(anchor=tk.W, pady=(0, 5))
+
+        # Contenedor con Scroll para los elementos
+        container = ttk.Frame(schemas_frame)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        self.canvas = tk.Canvas(container, bg="white", height=90, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(container, orient=tk.VERTICAL, command=self.canvas.yview)
+        
+        self.scrollable_inner_frame = ttk.Frame(self.canvas)
+        self.scrollable_inner_frame.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        )
+
+        self.canvas.create_window((0, 0), window=self.scrollable_inner_frame, anchor="nw")
+        self.canvas.configure(yscrollcommand=scrollbar.set)
+
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         # --- BOTÓN DE EJECUCIÓN ---
         self.btn_restore = ttk.Button(main_frame, text="INICIAR RESTAURACIÓN", command=self.start_restore_thread)
@@ -120,12 +164,12 @@ class RestorerApp:
         log_frame = ttk.LabelFrame(main_frame, text=" Progreso de la Restauración ", padding=5)
         log_frame.pack(fill=tk.BOTH, expand=True, pady=5)
 
-        self.log_text = tk.Text(log_frame, wrap=tk.WORD, bg="black", fg="#00FF00", font=("Consolas", 9))
+        self.log_text = tk.Text(log_frame, wrap=tk.WORD, bg="black", fg="#00FF00", font=("Consolas", 9), height=7)
         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        scrollbar = ttk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self.log_text.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.log_text.configure(yscrollcommand=scrollbar.set)
+        log_scroll = ttk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self.log_text.yview)
+        log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.log_text.configure(yscrollcommand=log_scroll.set)
 
     def get_restorer_instance(self):
         return DatabaseRestorer(
@@ -134,6 +178,90 @@ class RestorerApp:
             user=self.user_entry.get().strip(),
             password=self.pass_entry.get().strip()
         )
+        
+    def load_items_for_latest_backup(self):
+        filepath = self.file_entry.get().strip()
+        self.status_label.config(text="⏳ Analizando respaldo disponible...", foreground="orange")
+        threading.Thread(target=self._background_load_items, args=(filepath if filepath else None,), daemon=True).start()
+
+    def on_mode_change(self):
+        """Se ejecuta cuando el usuario cambia entre modo Esquemas y Tablas."""
+        self.load_items_for_latest_backup()
+
+    def _background_load_items(self, filepath):
+        try:
+            restorer = self.get_restorer_instance()
+            if not filepath:
+                try:
+                    filepath = restorer.get_latest_backup()
+                except Exception:
+                    filepath = None
+            
+            if filepath and os.path.exists(filepath):
+                mode = self.mode_var.get()
+                if mode == "schemas":
+                    items = restorer.get_dump_schemas(filepath)
+                else:
+                    items = restorer.get_dump_tables(filepath)
+
+                self.root.after(0, lambda: self.populate_items_ui(items, os.path.basename(filepath), mode))
+            else:
+                self.root.after(0, lambda: self.status_label.config(text="⚠ No se encontró ningún archivo .dump.", foreground="red"))
+        except Exception as e:
+            self.root.after(0, lambda: self.status_label.config(text=f"❌ Error: {str(e)}", foreground="red"))
+    
+    def populate_items_ui(self, items, filename, mode):
+        for widget in self.scrollable_inner_frame.winfo_children():
+            widget.destroy()
+
+        self.schema_vars.clear()
+        self.master_schema_var.set(True)
+
+        for item in items:
+            var = tk.BooleanVar(value=True)
+            var.trace_add("write", lambda *args: self.check_individual_items())
+            
+            chk = ttk.Checkbutton(self.scrollable_inner_frame, text=item, variable=var)
+            chk.pack(anchor=tk.W, pady=2)
+            self.schema_vars[item] = var
+
+        mode_text = "esquema(s)" if mode == "schemas" else "tabla(s)"
+        self.status_label.config(
+            text=f"✔ Archivo analizado ({filename}): {len(items)} {mode_text} encontrado(s).", 
+            foreground="green"
+        )
+        
+    def populate_schemas_ui(self, schemas, filename):
+        for widget in self.scrollable_inner_frame.winfo_children():
+            widget.destroy()
+
+        self.schema_vars.clear()
+        self.master_schema_var.set(True)
+
+        for schema in schemas:
+            var = tk.BooleanVar(value=True)
+            var.trace_add("write", lambda *args: self.check_individual_schemas())
+            
+            chk = ttk.Checkbutton(self.scrollable_inner_frame, text=schema, variable=var)
+            chk.pack(anchor=tk.W, pady=2)
+            self.schema_vars[schema] = var
+
+        self.status_label.config(
+            text=f"✔ Archivo analizado ({filename}): {len(schemas)} esquema(s) encontrado(s).", 
+            foreground="green"
+        )
+
+    def toggle_all_items(self):
+        state = self.master_schema_var.get()
+        for var in self.schema_vars.values():
+            var.set(state)
+
+    def check_individual_items(self):
+        if not self.schema_vars:
+            return
+        all_checked = all(var.get() for var in self.schema_vars.values())
+        if not all_checked and self.master_schema_var.get():
+            self.master_schema_var.set(False)
 
     def test_and_load_dbs(self):
         restorer = self.get_restorer_instance()
@@ -145,9 +273,10 @@ class RestorerApp:
         dbs = restorer.list_databases()
         if dbs:
             self.db_combobox['values'] = dbs
-            messagebox.showinfo("Conexión Exitosa", f"Conexión establecida correctamente.\nSe encontraron {len(dbs)} bases de datos.")
+            messagebox.showinfo("Conexión Exitosa", f"Se encontraron {len(dbs)} bases de datos.")
         else:
             messagebox.showwarning("Aviso", "Conexión exitosa, pero no se pudieron listar las bases de datos.")
+            
 
     def prompt_create_database(self):
         new_db_name = tk.simpledialog.askstring("Crear Base de Datos", "Ingrese el nombre de la nueva base de datos:")
@@ -162,7 +291,7 @@ class RestorerApp:
             self.db_combobox['values'] = dbs
             self.db_combobox.set(new_db_name.strip())
         else:
-            messagebox.showerror("Error", f"No se pudo crear la base de datos:\n{msg}")
+            messagebox.showerror("Error", f"No se pudo crear:\n{msg}")
 
     def browse_file(self):
         filename = filedialog.askopenfilename(
@@ -172,6 +301,9 @@ class RestorerApp:
         if filename:
             self.file_entry.delete(0, tk.END)
             self.file_entry.insert(0, filename)
+            self.load_items_for_latest_backup()
+            
+            
 
     def show_about_dialog(self):
         # Crear una ventana secundaria flotante
@@ -267,34 +399,57 @@ class RestorerApp:
         cli_window.title("Equivalente en Consola (CLI)")
         cli_window.geometry("600x200")
         
-        ttk.Label(cli_window, text="Si prefieres ejecutar este proceso directamente desde la terminal,", font=("Arial", 9)).pack(anchor=tk.W, padx=15, pady=(15, 5))
-        ttk.Label(cli_window, text="puedes utilizar el siguiente comando:", font=("Arial", 9)).pack(anchor=tk.W, padx=15, pady=(0, 5))
-        
+        ttk.Label(cli_window, text="Comando equivalente para terminal:", font=("Arial", 9, "bold")).pack(anchor=tk.W, padx=15, pady=(15, 5))
         cmd_entry = ttk.Entry(cli_window, font=("Consolas", 9))
         cmd_entry.insert(0, cmd_example)
         cmd_entry.pack(fill=tk.X, padx=15, pady=10)
-        
         ttk.Button(cli_window, text="Cerrar", command=cli_window.destroy).pack(pady=5)
 
     def log_message(self, message):
         self.log_text.insert(tk.END, message)
         self.log_text.see(tk.END)
+        
 
     def start_restore_thread(self):
         db_name = self.db_combobox.get().strip()
         if not db_name:
-            messagebox.showwarning("Campo requerido", "Debe seleccionar o escribir una base de datos destino.")
+            messagebox.showwarning("Campo requerido", "Debe seleccionar una base de datos destino.")
             return
 
-        if not messagebox.askyesno("Confirmar Restauración", f"¿Está seguro de restaurar el respaldo en la base de datos '{db_name}'?\nEsto sobrescribirá los datos actuales."):
+        mode = self.mode_var.get()
+        selected_schemas = None
+        selected_tables = None
+
+        if not self.master_schema_var.get():
+            checked_items = [item for item, var in self.schema_vars.items() if var.get()]
+            if not checked_items:
+                messagebox.showwarning("Atención", "Debe seleccionar al menos un elemento o marcar 'Seleccionar todo'.")
+                return
+            
+            if mode == "schemas":
+                selected_schemas = checked_items
+            else:
+                selected_tables = checked_items
+
+        msg_confirm = f"¿Está seguro de restaurar en la base de datos '{db_name}'?"
+        if not self.master_schema_var.get():
+            msg_confirm += f"\nModo: {mode.upper()}\nElementos seleccionados: {len(checked_items)}"
+        else:
+            msg_confirm += "\nSe restaurará todo el contenido del archivo."
+
+        if not messagebox.askyesno("Confirmar Restauración", msg_confirm):
             return
 
         self.btn_restore.config(state=tk.DISABLED)
         self.log_text.delete("1.0", tk.END)
 
-        threading.Thread(target=self.run_restore_process, args=(db_name,), daemon=True).start()
+        threading.Thread(
+            target=self.run_restore_process, 
+            args=(db_name, selected_schemas, selected_tables), 
+            daemon=True
+        ).start()
 
-    def run_restore_process(self, db_name):
+    def run_restore_process(self, db_name, selected_schemas, selected_tables):
         restorer = self.get_restorer_instance()
         backup_path = self.file_entry.get().strip()
 
@@ -304,6 +459,8 @@ class RestorerApp:
             result = restorer.restore_database(
                 db_name=db_name,
                 backup_file_path=backup_path if backup_path else None,
+                selected_schemas=selected_schemas,
+                selected_tables=selected_tables,
                 callback_output=lambda line: self.root.after(0, self.log_message, line)
             )
 
@@ -325,7 +482,7 @@ class RestorerApp:
             messagebox.showwarning("Aviso", "La restauración finalizó, pero se ignoraron algunos errores menores (Exit Code 1).")
         else:
             messagebox.showerror("Error", "Ocurrió un error crítico durante la restauración. Revise la consola.")
-
+            
 if __name__ == "__main__":
     root = tk.Tk()
     app = RestorerApp(root)

@@ -1,5 +1,6 @@
 import os
 import subprocess
+import re
 import psycopg2
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
@@ -16,7 +17,6 @@ class DatabaseRestorer:
             self.backup_dir = os.path.expanduser("~/backups_tren_maya_database") if os.name != "nt" else "C:\\backups_tren_maya_database"
 
     def _get_connection(self, db_name="postgres"):
-        """Establece conexión con PostgreSQL."""
         return psycopg2.connect(
             host=self.host,
             port=self.port,
@@ -26,7 +26,6 @@ class DatabaseRestorer:
         )
 
     def test_connection(self):
-        """Prueba la conexión al servidor PostgreSQL."""
         try:
             conn = self._get_connection("postgres")
             conn.close()
@@ -35,7 +34,6 @@ class DatabaseRestorer:
             return False, str(e)
 
     def list_databases(self):
-        """Lista todas las bases de datos disponibles en el servidor."""
         try:
             conn = self._get_connection("postgres")
             cursor = conn.cursor()
@@ -48,7 +46,6 @@ class DatabaseRestorer:
             return []
 
     def create_database(self, db_name):
-        """Crea una nueva base de datos en el servidor."""
         try:
             conn = self._get_connection("postgres")
             conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
@@ -61,7 +58,6 @@ class DatabaseRestorer:
             return False, str(e)
 
     def get_latest_backup(self):
-        """Obtiene el archivo .dump más reciente en el directorio de respaldos."""
         if not os.path.exists(self.backup_dir):
             raise FileNotFoundError(f"La carpeta de respaldos no existe: {self.backup_dir}")
         
@@ -73,7 +69,6 @@ class DatabaseRestorer:
         return os.path.join(self.backup_dir, backup_files[0])
 
     def clean_failed_backups(self):
-        """Limpia archivos temporales o respaldos fallidos anteriores."""
         cleaned_logs = []
         if not os.path.exists(self.backup_dir):
             return cleaned_logs
@@ -91,10 +86,109 @@ class DatabaseRestorer:
                     os.remove(in_progress_path)
         return cleaned_logs
 
-    def restore_database(self, db_name, backup_file_path=None, callback_output=None):
+    def get_dump_schemas(self, backup_file_path):
         """
-        Ejecuta pg_restore de manera síncrona/en tiempo real.
-        callback_output es una función que recibe cada línea de texto generada.
+        Ejecuta pg_restore -l para inspeccionar el contenido del dump
+        y extraer los nombres de los esquemas (SCHEMA) de forma robusta.
+        """
+        if not os.path.isfile(backup_file_path):
+            raise FileNotFoundError(f"El archivo no existe: {backup_file_path}")
+
+        cmd = ["pg_restore", "-l", backup_file_path]
+        env = os.environ.copy()
+        if self.password:
+            env["PGPASSWORD"] = self.password
+
+        try:
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding='utf-8',
+                env=env,
+                check=True
+            )
+            
+            schemas = set()
+            for line in result.stdout.splitlines():
+                # Buscar líneas que contengan la definición de un esquema
+                if "SCHEMA" in line:
+                    parts = line.split()
+                    # El nombre del esquema suele ser el antepenúltimo o último token antes del propietario,
+                    # o podemos buscar el elemento que sigue a "SCHEMA" o "-"
+                    if "SCHEMA" in parts:
+                        idx = parts.index("SCHEMA")
+                        # Revisar los elementos posteriores a la palabra SCHEMA
+                        for token in parts[idx+1:]:
+                            # Ignorar guiones o palabras clave comunes de metadatos
+                            if token not in ["-", "COMMENT", "AS", "AUTHORIZATION"] and not token.startswith("--"):
+                                clean_name = token.replace('"', '').strip()
+                                if clean_name:
+                                    schemas.add(clean_name)
+                                break
+            
+            # Si por alguna razón el parser no detectó ninguno, aseguramos al menos 'public'
+            if not schemas:
+                schemas.add("public")
+
+            # Ordenar alfabéticamente asegurando que 'public' quede primero
+            schema_list = sorted(list(schemas))
+            if "public" in schema_list:
+                schema_list.remove("public")
+                schema_list.insert(0, "public")
+                
+            return schema_list
+        except Exception as e:
+            return ["public"]
+    
+    def get_dump_tables(self, backup_file_path):
+        """
+        Ejecuta pg_restore -l para extraer las tablas del dump analizando 
+        la estructura real de las líneas TABLE del TOC de PostgreSQL.
+        """
+        if not os.path.isfile(backup_file_path):
+            raise FileNotFoundError(f"El archivo no existe: {backup_file_path}")
+
+        cmd = ["pg_restore", "-l", backup_file_path]
+        env = os.environ.copy()
+        if self.password:
+            env["PGPASSWORD"] = self.password
+
+        try:
+            result = subprocess.run(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding='utf-8', env=env, check=True
+            )
+            
+            tables = set()
+            for line in result.stdout.splitlines():
+                # Buscamos líneas que contengan TABLE y pertenezcan a la definición de la tabla
+                if "TABLE" in line and "TABLE DATA" not in line and not line.strip().startswith(";"):
+                    parts = line.split()
+                    if "TABLE" in parts:
+                        idx = parts.index("TABLE")
+                        # Todo lo que está después de "TABLE" hasta el final suelen ser tokens descriptivos
+                        tokens = [p.replace('"', '').strip() for p in parts[idx+1:] if p not in ["-", "AS", "AUTHORIZATION"] and not p.startswith("--")]
+                        
+                        if len(tokens) >= 2:
+                            # Por lo general, el último token es el esquema y el penúltimo es la tabla
+                            # Ejemplo: ['dictaminacion', 'tc_dictaminacion_ddv_l', 'continuidad_dictamenes'] o similar
+                            # Tomaremos el nombre de la tabla y su esquema contenedor principal
+                            table_name = tokens[-2]
+                            schema_name = tokens[-1]
+                            tables.add(f"{schema_name}.{table_name}")
+                        elif len(tokens) == 1:
+                            tables.add(tokens[0])
+                            
+            return sorted(list(tables))
+        except Exception as e:
+            return []
+        
+
+    def restore_database(self, db_name, backup_file_path=None, selected_schemas=None, selected_tables=None, callback_output=None):
+        """
+        Ejecuta pg_restore aplicando la bandera -n de forma dinámica si se especifican esquemas.
         """
         if not backup_file_path or backup_file_path.strip() == "":
             backup_file_path = self.get_latest_backup()
@@ -102,7 +196,6 @@ class DatabaseRestorer:
         if not os.path.isfile(backup_file_path):
             raise FileNotFoundError(f"El archivo de respaldo no existe: {backup_file_path}")
 
-        # Limpiar fallidos antes de arrancar
         self.clean_failed_backups()
 
         pg_restore_cmd = [
@@ -114,9 +207,21 @@ class DatabaseRestorer:
             "-v",
             "--clean",
             "--no-owner",
-            "--no-privileges",
-            backup_file_path
+            "--no-privileges"
         ]
+
+        # Agregar esquemas dinámicamente si se proporcionan
+        # Si eligieron esquemas específicos
+        if selected_schemas:
+            for schema in selected_schemas:
+                pg_restore_cmd.extend(["-n", schema])
+
+        # Si eligieron tablas específicas (modo granular para departamentos)
+        if selected_tables:
+            for table in selected_tables:
+                pg_restore_cmd.extend(["-t", table])
+
+        pg_restore_cmd.append(backup_file_path)
 
         env = os.environ.copy()
         if self.password:
