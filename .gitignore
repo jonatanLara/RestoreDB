@@ -1,0 +1,37 @@
+# Archivos específicos de tu proyecto
+version_info.txt
+compilar.py
+
+# Carpetas generadas por PyInstaller
+build/
+dist/
+*.spec
+
+# Caché y archivos compilados de Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Entornos virtuales
+venv/
+env/
+.venv/
+ENV/
+
+# Configuraciones de editores / IDEs (VS Code, PyCharm, etc.)
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Archivos del sistema operativo (Windows / macOS)
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Logs, bases de datos de prueba y variables de entorno
+*.log
+*.sqlite3
+*.db
+.env
